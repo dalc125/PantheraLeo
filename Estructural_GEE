@@ -1,0 +1,63 @@
+# Analisis conectividad estructural en GEE
+
+```javascript
+// 1. Cargar el área de estudio desde un shapefile subido como asset
+var userShape = ee.FeatureCollection('users/your_user/your_shapefile_asset');
+var areaEstudio = userShape.geometry();
+
+// 2. Cargar y filtrar el Corine Land Cover 1:25000
+var corine = ee.Image('COPERNICUS/CORINE/V20/100m/2012')
+              .clip(areaEstudio)
+              .rename('clc');
+
+// 3. Cargar imagen de 3m (ej. Planetscope - requiere acceso)
+// NOTA: Debes tener acceso a este dataset y modificarlo según tu fuente
+var imagen3m = ee.ImageCollection('PLANET/SCOPE/ORTHO_RGB')
+              .filterBounds(areaEstudio)
+              .filterDate('2020-01-01', '2020-12-31')
+              .median()
+              .clip(areaEstudio);
+
+// 4. Calcular métricas de paisaje
+var calcularMetricas = function(image) {
+  // Convertir a binario (presencia/ausencia de clase)
+  var clases = image.remap([1,2,3,4,5], [1,1,1,1,1]); // Agrupar clases según necesidades
+  
+  // Calcular parches conectados
+  var parches = clases.connectedPixelCount({
+    maxSize: 1000,
+    neighborhood: 'square' // 'square' o 'plus'
+  });
+  
+  // Calcular métricas
+  var stats = parches.reduceRegion({
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }).combine({
+      reducer2: ee.Reducer.minMax(),
+      sharedInputs: true
+    }),
+    geometry: areaEstudio,
+    scale: 100, // Ajustar según resolución del CLC
+    maxPixels: 1e13
+  });
+  
+  return ee.Feature(null, stats);
+};
+
+// 5. Aplicar cálculo de métricas
+var metricas = calcularMetricas(corine.select('clc'));
+
+// 6. Visualización
+Map.centerObject(areaEstudio, 12);
+Map.addLayer(imagen3m, {bands: ['R', 'G', 'B'], min: 0, max: 2500}, 'Imagen 3m');
+Map.addLayer(corine, {min: 1, max: 5, palette: ['green', 'gray', 'blue', 'yellow', 'red']}, 'CLC');
+Map.addLayer(userShape, {color: 'white'}, 'Área de Estudio');
+
+// 7. Exportar resultados
+Export.table.toDrive({
+  collection: ee.FeatureCollection([metricas]),
+  description: 'Metricas_Paisaje',
+  fileFormat: 'CSV'
+});
