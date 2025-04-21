@@ -1,0 +1,155 @@
+# Cambiar marcas de agua de imagenes
+
+import os
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance, UnidentifiedImageError
+from argparse import ArgumentParser
+
+def add_watermark(input_folder, output_folder, watermark_type, watermark_content, 
+                  position='bottom-right', opacity=0.5, font_size=40, 
+                  watermark_scale=0.2, replace=False):
+    """
+    Añade o reemplaza marcas de agua en imágenes
+    Parámetros:
+        input_folder: Carpeta con imágenes originales
+        output_folder: Carpeta para imágenes con marca
+        watermark_type: 'text' o 'image'
+        watermark_content: Texto o ruta de imagen de marca
+        position: Posición (top-left, top-right, center, bottom-left, bottom-right)
+        opacity: Transparencia (0-1)
+        font_size: Tamaño de fuente para texto
+        watermark_scale: Escala para marcas de imagen (0-1)
+        replace: Si True, reemplaza marcas existentes
+    """
+    
+    # Validar parámetros
+    if not os.path.exists(input_folder):
+        raise FileNotFoundError(f"Carpeta no encontrada: {input_folder}")
+    
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Procesar imágenes
+    for filename in os.listdir(input_folder):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+            try:
+                image_path = os.path.join(input_folder, filename)
+                original = Image.open(image_path).convert("RGBA")
+                watermarked = original.copy()
+                
+                if replace:
+                    watermarked = remove_watermark(watermarked) # Función básica
+                
+                if watermark_type == 'text':
+                    watermarked = add_text_watermark(
+                        watermarked, watermark_content, 
+                        position, opacity, font_size
+                    )
+                elif watermark_type == 'image':
+                    watermarked = add_image_watermark(
+                        watermarked, watermark_content,
+                        position, opacity, watermark_scale
+                    )
+                
+                # Guardar imagen
+                output_path = os.path.join(output_folder, filename)
+                watermarked.convert("RGB").save(output_path)
+                print(f"Imagen procesada: {filename}")
+                
+            except (UnidentifiedImageError, Exception) as e:
+                print(f"Error procesando {filename}: {str(e)}")
+
+def add_text_watermark(image, text, position, opacity, font_size):
+    """Añade marca de agua de texto"""
+    watermark = Image.new("RGBA", image.size, (0,0,0,0))
+    draw = ImageDraw.Draw(watermark)
+    
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
+    
+    text_width, text_height = draw.textsize(text, font)
+    x, y = calculate_position(position, image.size, (text_width, text_height))
+    
+    draw.text((x, y), text, font=font, fill=(255,255,255, int(255 * opacity)))
+    return Image.alpha_composite(image, watermark)
+
+def add_image_watermark(image, watermark_path, position, opacity, scale):
+    """Añade marca de agua de imagen"""
+    if not os.path.exists(watermark_path):
+        raise FileNotFoundError(f"Imagen de marca no encontrada: {watermark_path}")
+    
+    watermark = Image.open(watermark_path).convert("RGBA")
+    target_size = (
+        int(image.width * scale),
+        int(image.height * scale)
+    )
+    watermark.thumbnail(target_size, Image.LANCZOS)
+    
+    x, y = calculate_position(position, image.size, watermark.size)
+    watermark = watermark.resize((watermark.width, watermark.height))
+    watermark = adjust_opacity(watermark, opacity)
+    
+    image.paste(watermark, (x, y), watermark)
+    return image
+
+def calculate_position(position, img_size, watermark_size):
+    """Calcula posición de la marca"""
+    img_width, img_height = img_size
+    wm_width, wm_height = watermark_size
+    padding = 20
+    
+    positions = {
+        'top-left': (padding, padding),
+        'top-right': (img_width - wm_width - padding, padding),
+        'center': ((img_width - wm_width)//2, (img_height - wm_height)//2),
+        'bottom-left': (padding, img_height - wm_height - padding),
+        'bottom-right': (img_width - wm_width - padding, img_height - wm_height - padding)
+    }
+    
+    return positions.get(position.lower(), positions['bottom-right'])
+
+def adjust_opacity(watermark, opacity):
+    """Ajusta opacidad de la marca"""
+    alpha = watermark.split()[3]
+    alpha = ImageEnhance.Brightness(alpha).enhance(opacity)
+    watermark.putalpha(alpha)
+    return watermark
+
+def remove_watermark(image):
+    """Función básica para remover marca (requiere personalización)"""
+    # Implementar lógica específica según tu marca de agua
+    return image # Retorna la imagen sin cambios
+
+if __name__ == "__main__":
+    parser = ArgumentParser(description="Herramienta para marcas de agua")
+    parser.add_argument("-i", "--input", required=True, help="Carpeta con imágenes")
+    parser.add_argument("-o", "--output", required=True, help="Carpeta de salida")
+    parser.add_argument("-t", "--type", choices=['text', 'image'], required=True, 
+                        help="Tipo de marca")
+    parser.add_argument("-c", "--content", required=True, 
+                        help="Texto o ruta de imagen para la marca")
+    parser.add_argument("-p", "--position", default="bottom-right", 
+                        help="Posición de la marca")
+    parser.add_argument("--opacity", type=float, default=0.5,
+                        help="Opacidad (0-1)")
+    parser.add_argument("--font_size", type=int, default=40,
+                        help="Tamaño de fuente para texto")
+    parser.add_argument("--scale", type=float, default=0.2,
+                        help="Escala para marcas de imagen")
+    parser.add_argument("--replace", action="store_true",
+                        help="Reemplazar marcas existentes")
+    
+    args = parser.parse_args()
+    
+    add_watermark(
+        input_folder=args.input,
+        output_folder=args.output,
+        watermark_type=args.type,
+        watermark_content=args.content,
+        position=args.position,
+        opacity=args.opacity,
+        font_size=args.font_size,
+        watermark_scale=args.scale,
+        replace=args.replace
+    )
+```
