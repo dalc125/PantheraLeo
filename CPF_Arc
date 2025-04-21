@@ -1,0 +1,63 @@
+# crear CPF al azar en ArcGis
+
+import arcpy
+import random
+
+# Variables de entrada
+input_layer = r"Ruta\de\tu\capa_de_coberturas.shp" # Capa de coberturas de la tierra
+output_layer = r"Ruta\de\salida\poligonos_seleccionados.shp" # Salida
+area_hectareas = 6 # Área en hectáreas
+num_poligonos = 20 # Número de polígonos
+
+# Calcular el área en metros cuadrados
+area_m2 = area_hectareas * 10000
+
+# Crear la capa de salida
+arcpy.CreateFeatureclass_management(
+    out_path=r"Ruta\de\salida",
+    out_name="poligonos_seleccionados.shp",
+    geometry_type="POLYGON",
+    spatial_reference=arcpy.Describe(input_layer).spatialReference
+)
+
+# Agregar un campo de identificación
+arcpy.AddField_management(output_layer, "ID", "SHORT")
+
+# Seleccionar aleatoriamente 20 ubicaciones dentro de la capa de entrada
+fields = ["SHAPE@", "FID"]
+cursor = arcpy.da.SearchCursor(input_layer, fields)
+
+polygons_created = 0
+
+with arcpy.da.InsertCursor(output_layer, ["SHAPE@", "ID"]) as insert_cursor:
+    for row in cursor:
+        if polygons_created >= num_poligonos:
+            break
+
+        shape = row[0]
+        if shape is not None:
+            # Crear un punto aleatorio dentro de la geometría
+            extent = shape.extent
+            x = random.uniform(extent.XMin, extent.XMax)
+            y = random.uniform(extent.YMin, extent.YMax)
+
+            # Definir el tamaño del polígono (cuadrado o rectangular)
+            side_length = (area_m2 ** 0.5) # Lado de un cuadrado de 6 ha
+            rect_width = side_length
+            rect_height = side_length
+
+            # Crear el polígono
+            poly = arcpy.Polygon(arcpy.Array([
+                arcpy.Point(x, y),
+                arcpy.Point(x + rect_width, y),
+                arcpy.Point(x + rect_width, y + rect_height),
+                arcpy.Point(x, y + rect_height),
+                arcpy.Point(x, y) # Cierra el polígono
+            ]), arcpy.Describe(input_layer).spatialReference)
+
+            # Verificar si está completamente dentro del área original
+            if shape.contains(poly):
+                insert_cursor.insertRow([poly, polygons_created + 1])
+                polygons_created += 1
+
+print(f"Se crearon {polygons_created} polígonos en la capa {output_layer}.")
