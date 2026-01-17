@@ -1,0 +1,406 @@
+# ==========================================================
+# ANALISIS DE ACTIVIDAD DE FAUNA CON CAMARAS TRAMPA
+# Codigo completo, corregido y robusto
+# Daniel Leon – Flujo listo para VS Code
+# ==========================================================
+
+# ------------------ PAQUETES ------------------
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import gaussian_kde, bootstrap
+from itertools import combinations
+
+# ------------------ CONFIGURACION ------------------
+ARCHIVO_EXCEL = "D:\STAT_SDA\CT24_I_FAUNA_CT.xlsx"  # Excel principal
+DIR_SALIDA = "D:\STAT_SDA\RESULTADOS_FAUNA"  # Carpeta de salida
+
+HORA_DIA_INICIO = 6   # 6 am
+HORA_DIA_FIN = 18     # 6 pm
+
+N_BOOT = 1000
+
+os.makedirs(DIR_SALIDA, exist_ok=True)
+
+
+# ------------------ FUNCIONES AUXILIARES ------------------
+
+def hora_a_angulo(hora):
+    """Convierte hora decimal a ángulo circular (0–2pi)"""
+    return 2 * np.pi * (hora / 24.0)
+
+
+def overlap_coef(a1, a2, bw=0.8):
+    a1 = np.atleast_1d(a1).astype(float)
+    a2 = np.atleast_1d(a2).astype(float)
+
+    if len(a1) < 2 or len(a2) < 2:
+        return np.nan
+
+    if np.std(a1) == 0 or np.std(a2) == 0:
+        return np.nan
+
+    try:
+        kde1 = gaussian_kde(a1, bw_method=bw)
+        kde2 = gaussian_kde(a2, bw_method=bw)
+    except Exception:
+        return np.nan
+
+    x = np.linspace(0, 2 * np.pi, 512)
+    y1 = kde1(x)
+    y2 = kde2(x)
+
+    return np.trapz(np.minimum(y1, y2), x)
+
+
+def bootstrap_overlap(a1, a2, n_boot=1000):
+    deltas = []
+
+    n1, n2 = len(a1), len(a2)
+
+    for _ in range(n_boot):
+        s1 = np.random.choice(a1, size=n1, replace=True)
+        s2 = np.random.choice(a2, size=n2, replace=True)
+
+        d = overlap_coef(s1, s2)
+        if not np.isnan(d):
+            deltas.append(d)
+
+    if len(deltas) < 10:
+        return np.nan, np.nan
+
+    return np.percentile(deltas, [2.5, 97.5])
+
+
+# ------------------ LECTURA Y LIMPIEZA ------------------
+print("Leyendo datos...")
+
+df = pd.read_excel(ARCHIVO_EXCEL)
+
+# Normaliza columnas (ajusta nombres si es necesario)
+df.columns = [c.upper() for c in df.columns]
+
+# Convierte fecha y hora
+df["FECHA"] = pd.to_datetime(df["FECHA"], dayfirst=True)
+
+df["HORA"] = (
+    pd.to_datetime(df["HORA"], format="mixed", errors="coerce")
+      .dt.hour
+    +
+    pd.to_datetime(df["HORA"], format="mixed", errors="coerce")
+      .dt.minute / 60
+)
+
+# Periodo dia / noche
+#df["PERIODO"] = np.where(
+#    (df["HORA"] >= HORA_DIA_INICIO) & (df["HORA"] < HORA_DIA_FIN),
+#   "Dia",
+#    "Noche"
+#)
+
+# Clasificación día / noche (24h)
+
+df["PERIODO"] = np.where(
+    (df["HORA_DECIMAL"] >= 6) & (df["HORA_DECIMAL"] < 18),
+    "Dia",
+    "Noche"
+)
+
+# Angulo circular
+df["ANGULO"] = df["HORA"].apply(hora_a_angulo)
+
+# ------------------ INDICES DIA / NOCHE ------------------
+print("Calculando indices de actividad...")
+
+#indices = (
+#    df.groupby(["ESPECIE", "PERIODO"])
+#      .size()
+#      .unstack(fill_value=0)
+#)
+
+indices = (
+    df.groupby(["Especie", "PERIODO"])
+      .size()
+      .unstack(fill_value=0)
+      .reset_index()
+)
+
+print(indices.columns)
+
+
+#indices["INDICE_DIURNO"] = indices["Dia"] / (indices["Dia"] + indices["Noche"])
+#indices.to_excel(os.path.join(DIR_SALIDA, "Indices_Actividad.xlsx"))
+
+indices["INDICE_DIURNO"] = (
+    indices["Dia"] /
+    (indices["Dia"] + indices["Noche"]).replace(0, np.nan)
+)
+indices.to_excel(os.path.join(DIR_SALIDA, "Indices_Actividad.xlsx"))
+
+df["PERIODO"].value_counts()
+
+# =====================================================
+# EXPORTAR EXCEL DE ACTIVIDAD DIARIA POR ESPECIE
+# =====================================================
+
+archivo_excel = "D:\STAT_SDA\Actividad_diaria_por_especie.xlsx"
+
+HORA_DIA_INI = 6
+HORA_DIA_FIN = 18
+
+with pd.ExcelWriter(archivo_excel, engine="openpyxl") as writer:
+
+    for especie, dfe in df.groupby("ESPECIE"):
+
+        horas = dfe["HORA"].dropna().values
+
+        if len(horas) < 2:
+            print(f"Saltando {especie}: <2 horas válidas")
+            continue
+
+        freq, bins = np.histogram(
+            horas,
+            bins=np.arange(0, 25, 1)
+        )
+
+        tabla_freq = pd.DataFrame({
+            "Hora": bins[:-1],
+            "Frecuencia": freq,
+            "Frecuencia_relativa": freq / freq.sum()
+        })
+
+        diurnas = np.logical_and(
+            horas >= HORA_DIA_INI,
+            horas < HORA_DIA_FIN
+        )
+
+        metrics = pd.DataFrame({
+            "Métrica": [
+                "N_registros",
+                "Hora_media",
+                "Hora_mediana",
+                "Hora_min",
+                "Hora_max",
+                "Actividad_diurna_prop",
+                "Actividad_nocturna_prop"
+            ],
+            "Valor": [
+                len(horas),
+                np.mean(horas),
+                np.median(horas),
+                np.min(horas),
+                np.max(horas),
+                diurnas.mean(),
+                1 - diurnas.mean()
+            ]
+        })
+
+        sheet_name = especie[:31]
+
+        tabla_freq.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            startrow=0
+        )
+
+        metrics.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            startrow=len(tabla_freq) + 3
+        )
+
+print("✅ Excel de actividad diaria generado correctamente")
+
+
+
+# ------------------ CURVAS DE ACTIVIDAD ------------------
+print("Generando curvas de actividad...")
+
+#for especie, dfe in df.groupby("ESPECIE"):
+#    if len(dfe) < 2:
+#        continue
+
+plt.figure()
+
+DIR_SALIDA = "D:\STAT_SDA"
+os.makedirs(DIR_SALIDA, exist_ok=True)
+
+for especie, dfe in df.groupby("ESPECIE"):
+
+    horas = dfe["HORA"].dropna().values
+
+    if len(horas) < 2:
+        print(f"Saltando {especie}: <2 horas válidas")
+        continue
+
+    plt.figure(figsize=(6, 4))
+
+    plt.hist(
+        horas,
+        bins=np.arange(0, 25, 1),
+        density=True
+    )
+
+    plt.title(especie)
+    plt.xlabel("Hora del día")
+    plt.ylabel("Frecuencia relativa")
+
+    plt.xticks(
+        range(0, 25, 3),
+        [f"{h:02d}" for h in range(0, 25, 3)]
+    )
+
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(
+            DIR_SALIDA,
+            f"Actividad_{especie.replace(' ', '_')}.png"
+        ),
+        dpi=300
+    )
+    plt.close()
+
+plt.figure(figsize=(10, 5))
+
+for especie, dfe in df.groupby("ESPECIE"):
+
+    horas = dfe["HORA"].dropna().values
+
+    if len(horas) < 2:
+        continue
+
+    hist, bins = np.histogram(
+        horas,
+        bins=np.arange(0, 25, 1),
+        density=True
+    )
+
+    centros = (bins[:-1] + bins[1:]) / 2
+
+    plt.step(
+        centros,
+        hist,
+        where="mid",
+        label=especie
+    )
+
+plt.xlabel("Hora del día")
+plt.ylabel("Frecuencia relativa")
+plt.xticks(
+    range(0, 25, 3),
+    [f"{h:02d}" for h in range(0, 25, 3)]
+)
+plt.legend(fontsize=8)
+plt.tight_layout()
+plt.savefig(
+    os.path.join(DIR_SALIDA, "Actividad_Comparativa_Especies.png"),
+    dpi=300
+)
+plt.close()
+
+#plt.hist(
+#    dfe["HORA"],
+#    bins=np.arange(0, 25, 1),
+#    density=True
+#)
+
+#plt.title(especie)
+#plt.xlabel("Hora del día")
+#plt.ylabel("Frecuencia relativa")
+
+#plt.xticks(
+#    ticks=np.arange(0, 25, 3),
+#    labels=[f"{h:02d}" for h in range(0, 25, 3)]
+#)
+
+#plt.tight_layout()
+#plt.savefig(os.path.join(DIR_SALIDA, f"Actividad_{especie}.png"), dpi=300)
+#plt.close()
+
+#    kde = gaussian_kde(dfe["ANGULO"], bw_method=0.8)
+ #   x = np.linspace(0, 2 * np.pi, 512)
+  #  y = kde(x)
+
+#    plt.figure()
+#    plt.plot(x, y)
+#    plt.title(especie)
+#    plt.xlabel("Hora del día")
+#    plt.ylabel("Densidad de actividad")
+
+#    plt.xticks(
+#    ticks=np.linspace(0, 2*np.pi, 9),
+#    labels=["00", "03", "06", "09", "12", "15", "18", "21", "24"]
+#    )
+
+#    plt.tight_layout()
+#    plt.savefig(os.path.join(DIR_SALIDA, f"Actividad_{especie}.png"), dpi=300)
+#    plt.close()
+    
+#    plt.figure(figsize=(10, 5))
+
+#for especie, dfe in df.groupby("ESPECIE"):
+#    if len(dfe) < 5:
+#        continue
+
+#    hist, bins = np.histogram(
+#        dfe["HORA"],
+#        bins=np.arange(0, 25, 1),
+#        density=True
+#    )
+
+#    centros = (bins[:-1] + bins[1:]) / 2
+#    plt.step(centros, hist, where="mid", label=especie)
+
+#plt.xlabel("Hora del día")
+#plt.ylabel("Frecuencia relativa")
+#plt.xticks(range(0, 25, 3))
+#plt.legend(fontsize=8)
+#plt.tight_layout()
+
+#plt.savefig(os.path.join(DIR_SALIDA, "Actividad_Comparativa_Especies.png"), dpi=300)
+#plt.close()
+
+# ------------------ OVERLAP ENTRE ESPECIES ------------------
+print("Calculando overlap...")
+
+resultados = []
+boot_ci = []
+
+especies = df["ESPECIE"].unique()
+
+for sp1, sp2 in combinations(especies, 2):
+
+    a1 = np.atleast_1d(
+        df[df["ESPECIE"] == sp1]["ANGULO"].dropna().values
+    )
+    a2 = np.atleast_1d(
+        df[df["ESPECIE"] == sp2]["ANGULO"].dropna().values
+    )
+
+    delta = overlap_coef(a1, a2)
+    resultados.append([sp1, sp2, delta])
+
+    if (
+        len(a1) < 5 or len(a2) < 5 or
+        np.std(a1) == 0 or np.std(a2) == 0
+    ):
+        boot_ci.append([sp1, sp2, np.nan, np.nan])
+        continue
+
+    ci_low, ci_high = bootstrap_overlap(a1, a2, n_boot=1000)
+    boot_ci.append([sp1, sp2, ci_low, ci_high])
+
+# ------------------ EXPORTAR RESULTADOS ------------------
+
+df_overlap = pd.DataFrame(resultados, columns=["Especie_1", "Especie_2", "Delta"])
+df_boot = pd.DataFrame(boot_ci, columns=["Especie_1", "Especie_2", "CI_low", "CI_high"])
+
+with pd.ExcelWriter(os.path.join(DIR_SALIDA, "Overlap_Resultados.xlsx")) as writer:
+    df_overlap.to_excel(writer, sheet_name="Delta", index=False)
+    df_boot.to_excel(writer, sheet_name="Bootstrap", index=False)
+
+print("\nANALISIS COMPLETADO CORRECTAMENTE")
+print("Resultados guardados en la carpeta 'resultados'")
